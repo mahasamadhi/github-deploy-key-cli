@@ -5,7 +5,70 @@ const chalk = require('chalk');
 const ora = require('ora');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const http = require('http');
 const { setupDeployKeys, setupActionsAccess, setupCert, verifyRepoAccess, logger } = require('../src');
+
+/**
+ * Fetch EC2 instance metadata (IMDSv2).
+ * Returns the value or null if not running on EC2.
+ */
+async function fetchEC2Metadata(metadataPath) {
+  try {
+    // IMDSv2: get a token first
+    const token = await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '169.254.169.254',
+        path: '/latest/api/token',
+        method: 'PUT',
+        headers: { 'X-aws-ec2-metadata-token-ttl-seconds': '21600' },
+        timeout: 2000
+      }, res => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve(data));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.end();
+    });
+
+    // Fetch the metadata value using the token
+    return await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '169.254.169.254',
+        path: `/latest/meta-data/${metadataPath}`,
+        method: 'GET',
+        headers: { 'X-aws-ec2-metadata-token': token },
+        timeout: 2000
+      }, res => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve(res.statusCode === 200 ? data.trim() : null));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.end();
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Auto-detect EC2 host (public IP) and current OS user.
+ */
+async function detectEC2Details() {
+  const user = os.userInfo().username;
+
+  // Try public IP first, fall back to private IP
+  let host = await fetchEC2Metadata('public-ipv4');
+  if (!host) {
+    host = await fetchEC2Metadata('local-ipv4');
+  }
+
+  return { host, user };
+}
 
 const program = new Command();
 
@@ -14,10 +77,10 @@ program
   .description('Automated GitHub deploy key setup')
   .version('1.0.0');
 
-// Setup command
+// Deploy keys command
 program
-  .command('setup')
-  .description('Set up SSH keys and add deploy keys to GitHub')
+  .command('deploy-keys')
+  .description('Generate SSH keys and register them as GitHub deploy keys for cloning private repos')
   .option('-c, --config <path>', 'Path to configuration file')
   .option('-t, --token <token>', 'GitHub personal access token')
   .option('-s, --ssh-dir <path>', 'SSH directory (default: ~/.ssh)')
@@ -34,14 +97,30 @@ program
           logger.error(`Config file not found: ${configPath}`);
           process.exit(1);
         }
-        const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const raw = fs.readFileSync(configPath, 'utf8');
+        let configData;
+        try {
+          configData = JSON.parse(raw);
+        } catch (e) {
+          logger.error(`Failed to parse config file: ${configPath}`);
+          logger.error(`File starts with: ${JSON.stringify(raw.slice(0, 80))}`);
+          throw e;
+        }
         repos = configData.repos || [];
         token = token || configData.personalAccessToken;
       } else {
         // Try default config location
         const defaultPath = path.join(process.cwd(), 'repos-config.json');
         if (fs.existsSync(defaultPath)) {
-          const configData = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
+          const raw = fs.readFileSync(defaultPath, 'utf8');
+          let configData;
+          try {
+            configData = JSON.parse(raw);
+          } catch (e) {
+            logger.error(`Failed to parse config file: ${defaultPath}`);
+            logger.error(`File starts with: ${JSON.stringify(raw.slice(0, 80))}`);
+            throw e;
+          }
           repos = configData.repos || [];
           token = token || configData.personalAccessToken;
         }
@@ -167,14 +246,17 @@ program
     }
   });
 
-// Init command
+// Generate config command
 program
-  .command('init')
-  .description('Create an example configuration file')
+  .command('generate-config')
+  .description('Generate an example repos-config.json file')
   .option('-o, --output <path>', 'Output file path', './repos-config.json')
   .action((options) => {
     const example = {
-      personalAccessToken: 'ghp_your_token_here',
+      personalAccessToken: 'ghp_your_deploy_key_token_here',
+      actionsToken: 'ghp_your_actions_token_here',
+      ec2Host: '',
+      ec2User: '',
       repos: [
         {
           name: 'my-app',
@@ -189,13 +271,13 @@ program
     const outputPath = path.resolve(options.output);
     fs.writeFileSync(outputPath, JSON.stringify(example, null, 2));
     logger.success(`Example config created: ${outputPath}`);
-    logger.info('Edit the file and run: deploy-key-setup setup -c ' + options.output);
+    logger.info('Edit the file and run: deploy-key-setup deploy-keys -c ' + options.output);
   });
 
-// Actions setup command
+// Actions SSH command
 program
-  .command('actions-setup')
-  .description('Set up GitHub Actions SSH access to this EC2 server')
+  .command('actions-ssh')
+  .description('Generate SSH keypair and store as GitHub Actions secrets for EC2 access')
   .option('-c, --config <path>', 'Path to configuration file')
   .option('-t, --token <token>', 'GitHub personal access token')
   .option('-s, --ssh-dir <path>', 'SSH directory (default: ~/.ssh)')
@@ -207,17 +289,46 @@ program
     try {
       let repos = [];
       let token = options.token || process.env.GITHUB_TOKEN;
+      let configEc2Host;
+      let configEc2User;
 
-      // Load from config file if provided
+      // Load from config file if provided, or try default location
       if (options.config) {
         const configPath = path.resolve(options.config);
         if (!fs.existsSync(configPath)) {
           logger.error(`Config file not found: ${configPath}`);
           process.exit(1);
         }
-        const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const raw = fs.readFileSync(configPath, 'utf8');
+        let configData;
+        try {
+          configData = JSON.parse(raw);
+        } catch (e) {
+          logger.error(`Failed to parse config file: ${configPath}`);
+          logger.error(`File starts with: ${JSON.stringify(raw.slice(0, 80))}`);
+          throw e;
+        }
         repos = configData.repos || [];
-        token = token || configData.personalAccessToken;
+        token = token || configData.actionsToken || configData.personalAccessToken;
+        configEc2Host = configData.ec2Host;
+        configEc2User = configData.ec2User;
+      } else {
+        const defaultPath = path.join(process.cwd(), 'repos-config.json');
+        if (fs.existsSync(defaultPath)) {
+          const raw = fs.readFileSync(defaultPath, 'utf8');
+          let configData;
+          try {
+            configData = JSON.parse(raw);
+          } catch (e) {
+            logger.error(`Failed to parse config file: ${defaultPath}`);
+            logger.error(`File starts with: ${JSON.stringify(raw.slice(0, 80))}`);
+            throw e;
+          }
+          repos = configData.repos || [];
+          token = token || configData.actionsToken || configData.personalAccessToken;
+          configEc2Host = configData.ec2Host;
+          configEc2User = configData.ec2User;
+        }
       }
 
       // If no token, prompt for it
@@ -225,7 +336,7 @@ program
         const answer = await inquirer.prompt([{
           type: 'password',
           name: 'token',
-          message: 'Enter your GitHub personal access token:',
+          message: 'Enter your GitHub personal access token (needs admin:repo scope):',
           mask: '*',
           validate: input => input.trim() !== '' ? true : 'Token is required'
         }]);
@@ -276,29 +387,27 @@ program
         process.exit(1);
       }
 
-      // Prompt for optional EC2 details if not provided
-      let ec2Host = options.host;
-      let ec2User = options.user;
+      // Resolve EC2 details: CLI flags > config file > auto-detect
+      let ec2Host = options.host || configEc2Host;
+      let ec2User = options.user || configEc2User;
 
       if (!ec2Host || !ec2User) {
-        const ec2Answers = await inquirer.prompt([
-          {
-            type: 'input',
-            name: 'host',
-            message: 'EC2 host/IP (leave blank to skip EC2_HOST secret):',
-            default: ec2Host || '',
-            when: () => !ec2Host
-          },
-          {
-            type: 'input',
-            name: 'user',
-            message: 'EC2 user (leave blank to skip EC2_USER secret):',
-            default: ec2User || '',
-            when: () => !ec2User
-          }
-        ]);
-        ec2Host = ec2Host || ec2Answers.host || undefined;
-        ec2User = ec2User || ec2Answers.user || undefined;
+        const spinner2 = ora('Detecting EC2 instance details...').start();
+        const detected = await detectEC2Details();
+        spinner2.stop();
+
+        if (!ec2User && detected.user) {
+          ec2User = detected.user;
+          logger.info(`Auto-detected EC2 user: ${chalk.green(ec2User)}`);
+        }
+        if (!ec2Host && detected.host) {
+          ec2Host = detected.host;
+          logger.info(`Auto-detected EC2 host: ${chalk.green(ec2Host)}`);
+        }
+
+        if (!ec2Host) {
+          logger.warn('Could not detect EC2 host IP. Use --host or add "ec2Host" to config.');
+        }
       }
 
       // Show summary
@@ -367,10 +476,10 @@ program
     }
   });
 
-// Cert setup command
+// ACM cert command
 program
-  .command('cert-setup')
-  .description('Request ACM certificate with Route 53 DNS validation')
+  .command('acm-cert')
+  .description('Request an ACM certificate with Route 53 DNS validation')
   .requiredOption('-d, --domain <domain>', 'Apex domain (e.g. storage-bot.com)')
   .option('-r, --region <region>', 'AWS region', 'us-east-1')
   .option('-v, --verbose', 'Enable verbose output')
@@ -399,10 +508,10 @@ program
     }
   });
 
-// Verify command
+// Verify token command
 program
-  .command('verify')
-  .description('Verify access to repositories')
+  .command('verify-token')
+  .description('Verify your GitHub PAT can access the configured repositories (run before deploy-keys)')
   .option('-c, --config <path>', 'Path to configuration file')
   .option('-t, --token <token>', 'GitHub personal access token')
   .action(async (options) => {
@@ -432,6 +541,63 @@ program
       spinner.stop();
 
       logger.summarize('Repository Access:', results);
+    } catch (error) {
+      logger.error(error.message);
+      process.exit(1);
+    }
+  });
+
+// Verify SSH command
+program
+  .command('verify-ssh')
+  .description('Test SSH connections to GitHub for each configured repo (run after deploy-keys)')
+  .option('-c, --config <path>', 'Path to configuration file')
+  .action(async (options) => {
+    try {
+      let repos = [];
+
+      if (options.config) {
+        const configPath = path.resolve(options.config);
+        const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        repos = configData.repos || [];
+      } else {
+        const defaultPath = path.join(process.cwd(), 'repos-config.json');
+        if (fs.existsSync(defaultPath)) {
+          const configData = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
+          repos = configData.repos || [];
+        }
+      }
+
+      if (repos.length === 0) {
+        logger.error('No repos to verify. Use --config to specify a config file.');
+        process.exit(1);
+      }
+
+      const { execSync } = require('child_process');
+      const results = [];
+
+      for (const repo of repos) {
+        const host = `github.com-${repo.name}`;
+        process.stdout.write(chalk.blue(`  Testing SSH to ${host}... `));
+        try {
+          // ssh -T always exits non-zero for GitHub, so we capture via stderr
+          execSync(`ssh -T -o StrictHostKeyChecking=no -o ConnectTimeout=10 git@${host}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+          console.log(chalk.green('OK'));
+          results.push({ name: repo.name, success: true });
+        } catch (error) {
+          const output = (error.stderr || '') + (error.stdout || '');
+          if (output.includes('successfully authenticated')) {
+            console.log(chalk.green('OK'));
+            results.push({ name: repo.name, success: true });
+          } else {
+            console.log(chalk.red('FAILED'));
+            logger.error(`  ${output.trim() || error.message}`);
+            results.push({ name: repo.name, success: false, error: output.trim() || error.message });
+          }
+        }
+      }
+
+      logger.summarize('SSH Connections:', results);
     } catch (error) {
       logger.error(error.message);
       process.exit(1);

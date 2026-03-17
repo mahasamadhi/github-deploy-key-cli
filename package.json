@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Automated GitHub deploy key setup - generates SSH keys and configures deploy keys via GitHub API",
   "main": "src/index.js",
+  "files": [
+    "bin/",
+    "src/"
+  ],
   "bin": {
     "deploy-key-setup": "./bin/cli.js"
   },

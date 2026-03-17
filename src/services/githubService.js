@@ -148,12 +148,15 @@ class GitHubService {
   }
 
   async addActionsSecret(repo, token, secretName, secretValue) {
-    logger.debug(`Setting secret ${secretName} on ${repo.org}/${repo.repo}...`);
-
     const pubKeyResult = await this.getRepoPublicKey(repo, token);
     if (!pubKeyResult.success) {
       return { success: false, name: repo.name, secretName, error: `Failed to get repo public key: ${pubKeyResult.error}` };
     }
+    return this.addActionsSecretWithKey(repo, token, secretName, secretValue, pubKeyResult);
+  }
+
+  async addActionsSecretWithKey(repo, token, secretName, secretValue, pubKeyResult) {
+    logger.debug(`Setting secret ${secretName} on ${repo.org}/${repo.repo}...`);
 
     const encryptedValue = await this.encryptSecret(secretValue, pubKeyResult.key);
 
@@ -189,9 +192,19 @@ class GitHubService {
     const results = [];
 
     for (const repo of repos) {
+      // Fetch the repo public key once per repo, not once per secret
+      const pubKeyResult = await this.getRepoPublicKey(repo, token);
+      if (!pubKeyResult.success) {
+        const secretNames = Object.keys(secrets);
+        for (const secretName of secretNames) {
+          results.push({ success: false, name: repo.name, secretName, error: `Failed to get repo public key: ${pubKeyResult.error}` });
+        }
+        continue;
+      }
+
       for (const [secretName, secretValue] of Object.entries(secrets)) {
         try {
-          const result = await this.addActionsSecret(repo, token, secretName, secretValue);
+          const result = await this.addActionsSecretWithKey(repo, token, secretName, secretValue, pubKeyResult);
           results.push(result);
         } catch (error) {
           results.push({ success: false, name: repo.name, secretName, error: error.message });
