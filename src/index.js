@@ -62,7 +62,8 @@ async function setupDeployKeys(options) {
   }
   logger.success(`Authenticated as ${tokenResult.user}`);
 
-  if (!tokenResult.scopes.includes('repo')) {
+  const scopeList = tokenResult.scopes.split(',').map(s => s.trim());
+  if (!scopeList.includes('repo')) {
     logger.warn('Token may not have "repo" scope - deploy key creation might fail');
   }
 

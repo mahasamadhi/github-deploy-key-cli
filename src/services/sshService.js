@@ -4,10 +4,20 @@ const { execSync } = require('child_process');
 const logger = require('../utils/logger');
 
 class SSHService {
+  static VALID_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+
   constructor(config) {
     this.sshDir = config.sshDir || path.join(require('os').homedir(), '.ssh');
     this.keyType = config.keyType || 'ed25519';
     this.ensureSSHDirectory();
+  }
+
+  static validateRepoName(name) {
+    if (!name || !SSHService.VALID_NAME_RE.test(name)) {
+      throw new Error(
+        `Invalid repo name "${name}": only alphanumeric characters, hyphens, and underscores are allowed`
+      );
+    }
   }
 
   ensureSSHDirectory() {
@@ -30,8 +40,14 @@ class SSHService {
     const results = [];
 
     for (const repo of repos) {
+      SSHService.validateRepoName(repo.name);
       const keyPath = this.getKeyPath(repo);
       const keyType = repo.keyType || this.keyType;
+
+      if (!['ed25519', 'rsa'].includes(keyType)) {
+        results.push({ name: repo.name, success: false, error: `Invalid key type: ${keyType}` });
+        continue;
+      }
 
       try {
         if (!fs.existsSync(keyPath)) {
@@ -64,6 +80,7 @@ class SSHService {
 
       let newEntries = '';
       for (const repo of repos) {
+        SSHService.validateRepoName(repo.name);
         const hostEntry = `Host github.com-${repo.name}`;
         if (!existingConfig.includes(hostEntry)) {
           newEntries += `${hostEntry}\n`;

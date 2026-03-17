@@ -229,32 +229,19 @@ The alias routes through the correct SSH key automatically.
 
 ## Getting This Tool onto Your EC2
 
-### Option 1: SCP from Windows (recommended for private tool)
+### SCP from Windows
 
-From your Windows machine (PowerShell or Git Bash):
+From PowerShell:
 
-```bash
-# Copy the entire folder to EC2
-scp -i ~/.ssh/your-ec2-key.pem -r ./deploy-key-setup ubuntu@YOUR_EC2_IP:~/
-
-# Or copy just the essential files (smaller transfer)
-scp -i ~/.ssh/your-ec2-key.pem -r ./deploy-key-setup/src ./deploy-key-setup/bin ./deploy-key-setup/package.json ubuntu@YOUR_EC2_IP:~/deploy-key-setup/
+```powershell
+scp -i $env:USERPROFILE\.ssh\bf-apps-key.pem -r "C:\Users\bfica\IdeaProjects\github-deploy-key-cli" ubuntu@52.6.132.60:~/
 ```
 
 Then SSH in and install:
 
-```bash
-ssh -i ~/.ssh/your-ec2-key.pem ubuntu@YOUR_EC2_IP
-cd ~/deploy-key-setup
-npm install
-```
-
-### Option 2: Git clone (if repo is on GitHub)
-
-```bash
-ssh -i ~/.ssh/your-ec2-key.pem ubuntu@YOUR_EC2_IP
-git clone https://github.com/yourorg/deploy-key-setup.git
-cd deploy-key-setup
+```powershell
+ssh -i $env:USERPROFILE\.ssh\bf-apps-key.pem ubuntu@52.6.132.60
+cd ~/github-deploy-key-cli
 npm install
 ```
 
