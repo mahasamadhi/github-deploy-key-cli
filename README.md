@@ -161,6 +161,84 @@ Your PAT needs these scopes to manage Actions secrets:
 - Classic token: `repo` scope
 - Fine-grained token: `Secrets` (read/write) + `Actions` (read/write) permissions on the target repos
 
+#### `frontend-setup` - Request ACM certificate with DNS validation
+
+Handles the AWS prerequisite steps needed before deploying a frontend CloudFormation stack. Requests an ACM certificate for your apex domain + www subdomain, sets up DNS validation records in Route 53, waits for the certificate to be issued, and prints the ARN so you can paste it into CloudFormation.
+
+```bash
+# Basic usage
+deploy-key-setup frontend-setup --domain storage-bot.com
+
+# Specify region (default: us-east-1)
+deploy-key-setup frontend-setup --domain storage-bot.com --region us-east-1
+
+# Verbose output
+deploy-key-setup frontend-setup --domain storage-bot.com -v
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-d, --domain <domain>` | Apex domain (required, e.g. `storage-bot.com`) |
+| `-r, --region <region>` | AWS region (default: `us-east-1`) |
+| `-v, --verbose` | Enable verbose output |
+
+**What it does (in order):**
+1. Checks if an ACM certificate already exists for the domain — skips request if found
+2. Requests a new ACM certificate for `storage-bot.com` and `www.storage-bot.com` with DNS validation
+3. Polls ACM until the DNS validation records are available
+4. Finds the Route 53 hosted zone matching the domain
+5. Upserts the CNAME validation records into Route 53
+6. Polls ACM every 15 seconds until the certificate status becomes `ISSUED` (10 minute timeout)
+7. Prints the certificate ARN for use in CloudFormation
+
+**Expected output:**
+```
+i Checking for existing certificate for storage-bot.com...
+i No existing certificate found.
+i Requesting certificate for storage-bot.com and www.storage-bot.com...
++ Certificate requested: arn:aws:acm:us-east-1:123456789:certificate/abc-123
+i Finding Route 53 hosted zone for storage-bot.com...
++ Found hosted zone: Z1234567890ABC
+i Adding DNS validation records to Route 53...
++ Added 2 validation record(s) to Route 53
+i Waiting for certificate validation (this may take a few minutes)...
+.......
++ Certificate issued!
+
+============================================
+Certificate ARN (paste into CloudFormation):
+arn:aws:acm:us-east-1:123456789:certificate/abc-123
+============================================
+```
+
+**AWS credentials:**
+
+Uses the standard AWS credential chain (`fromNodeProviderChain`), which automatically picks up:
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- `AWS_PROFILE` with SSO or credential files
+- EC2 instance role (if running on EC2)
+
+**Error handling:**
+- No hosted zone found → `"No hosted zone found for storage-bot.com — is this domain in Route 53?"`
+- Certificate stuck pending > 10 minutes → timeout with message to check Route 53 manually
+- Certificate enters `FAILED` state → prints the failure reason from ACM and exits
+
+**IAM permissions needed:**
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "acm:ListCertificates",
+    "acm:RequestCertificate",
+    "acm:DescribeCertificate",
+    "route53:ListHostedZones",
+    "route53:ChangeResourceRecordSets"
+  ],
+  "Resource": "*"
+}
+```
+
 ## Configuration File
 
 Create a `repos-config.json`:
@@ -282,6 +360,31 @@ Returns:
     { success: true, name: 'my-app', secretName: 'EC2_HOST' },
     { success: true, name: 'my-app', secretName: 'EC2_USER' }
   ]
+}
+```
+
+#### `setupFrontend(options)`
+
+Request ACM certificate and set up DNS validation.
+
+```javascript
+const { setupFrontend } = require('deploy-key-setup');
+
+const results = await setupFrontend({
+  domain: 'storage-bot.com',    // Required: apex domain
+  region: 'us-east-1',          // Optional: AWS region
+  verbose: false                // Optional: verbose logging
+});
+
+console.log(results.certificateArn);
+// arn:aws:acm:us-east-1:123456789:certificate/abc-123
+```
+
+Returns:
+```javascript
+{
+  success: true,
+  certificateArn: 'arn:aws:acm:us-east-1:123456789:certificate/abc-123'
 }
 ```
 

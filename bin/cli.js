@@ -5,7 +5,7 @@ const chalk = require('chalk');
 const ora = require('ora');
 const fs = require('fs');
 const path = require('path');
-const { setupDeployKeys, setupActionsAccess, verifyRepoAccess, logger } = require('../src');
+const { setupDeployKeys, setupActionsAccess, setupFrontend, verifyRepoAccess, logger } = require('../src');
 
 const program = new Command();
 
@@ -358,6 +358,38 @@ program
           "cd /app && git pull && npm install"`));
       } else {
         console.log(chalk.yellow('\n! Setup completed with some errors.'));
+        process.exit(1);
+      }
+    } catch (error) {
+      logger.error(error.message);
+      if (options.verbose) console.error(error);
+      process.exit(1);
+    }
+  });
+
+// Frontend setup command
+program
+  .command('frontend-setup')
+  .description('Request ACM certificate and set up DNS validation for frontend deployment')
+  .requiredOption('-d, --domain <domain>', 'Apex domain (e.g. storage-bot.com)')
+  .option('-r, --region <region>', 'AWS region', 'us-east-1')
+  .option('-v, --verbose', 'Enable verbose output')
+  .action(async (options) => {
+    try {
+      const results = await setupFrontend({
+        domain: options.domain,
+        region: options.region,
+        verbose: options.verbose
+      });
+
+      if (results.success && results.certificateArn) {
+        console.log('');
+        console.log(chalk.green('============================================'));
+        console.log(chalk.green('Certificate ARN (paste into CloudFormation):'));
+        console.log(chalk.yellow(results.certificateArn));
+        console.log(chalk.green('============================================'));
+      } else {
+        console.log(chalk.yellow('\n! Frontend setup completed with errors.'));
         process.exit(1);
       }
     } catch (error) {

@@ -2,6 +2,7 @@ const path = require('path');
 const os = require('os');
 const SSHService = require('./services/sshService');
 const GitHubService = require('./services/githubService');
+const AWSService = require('./services/awsService');
 const logger = require('./utils/logger');
 
 /**
@@ -209,12 +210,74 @@ async function setupActionsAccess(options) {
   return results;
 }
 
+/**
+ * Set up ACM certificate with DNS validation for a frontend deployment
+ *
+ * @param {Object} options - Configuration options
+ * @param {string} options.domain - Apex domain (e.g. storage-bot.com)
+ * @param {string} [options.region] - AWS region (default: us-east-1)
+ * @param {boolean} [options.verbose] - Enable verbose logging
+ * @returns {Promise<Object>} Results including certificate ARN
+ */
+async function setupFrontend(options) {
+  const { domain, region, verbose } = options;
+
+  if (!domain) {
+    throw new Error('Domain is required');
+  }
+
+  logger.setVerbose(verbose || false);
+
+  const awsService = new AWSService({ region: region || 'us-east-1' });
+  const wwwDomain = `www.${domain}`;
+
+  const results = {
+    certificateArn: null,
+    success: true
+  };
+
+  // 1. Check for existing certificate
+  const existing = await awsService.findExistingCertificate(domain);
+  let certArn;
+
+  if (existing && existing.status === 'ISSUED') {
+    certArn = existing.arn;
+    results.certificateArn = certArn;
+    return results;
+  }
+
+  if (existing && existing.status === 'PENDING_VALIDATION') {
+    certArn = existing.arn;
+  } else {
+    // 2. Request new certificate
+    const certResult = await awsService.requestCertificate(domain, wwwDomain);
+    certArn = certResult.certificateArn;
+  }
+
+  // 3. Get validation records
+  const validationRecords = await awsService.getValidationRecords(certArn);
+
+  // 4. Find hosted zone
+  const hostedZoneId = await awsService.findHostedZoneId(domain);
+
+  // 5. Add DNS records
+  await awsService.addValidationDnsRecords(hostedZoneId, validationRecords);
+
+  // 6. Wait for validation
+  await awsService.waitForCertificate(certArn);
+
+  results.certificateArn = certArn;
+  return results;
+}
+
 module.exports = {
   setupDeployKeys,
   setupActionsAccess,
+  setupFrontend,
   verifyRepoAccess,
   generateKeys,
   SSHService,
   GitHubService,
+  AWSService,
   logger
 };
