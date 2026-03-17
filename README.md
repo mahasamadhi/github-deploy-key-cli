@@ -161,19 +161,19 @@ Your PAT needs these scopes to manage Actions secrets:
 - Classic token: `repo` scope
 - Fine-grained token: `Secrets` (read/write) + `Actions` (read/write) permissions on the target repos
 
-#### `frontend-setup` - Request ACM certificate with DNS validation
+#### `cert-setup` - Request ACM certificate with Route 53 DNS validation
 
-Handles the AWS prerequisite steps needed before deploying a frontend CloudFormation stack. Requests an ACM certificate for your apex domain + www subdomain, sets up DNS validation records in Route 53, waits for the certificate to be issued, and prints the ARN so you can paste it into CloudFormation.
+Requests an ACM certificate for your apex domain + www subdomain, sets up DNS validation CNAME records in Route 53, waits for the certificate to be issued, and prints the ARN so you can paste it into CloudFormation.
 
 ```bash
 # Basic usage
-deploy-key-setup frontend-setup --domain storage-bot.com
+deploy-key-setup cert-setup --domain storage-bot.com
 
 # Specify region (default: us-east-1)
-deploy-key-setup frontend-setup --domain storage-bot.com --region us-east-1
+deploy-key-setup cert-setup --domain storage-bot.com --region us-east-1
 
 # Verbose output
-deploy-key-setup frontend-setup --domain storage-bot.com -v
+deploy-key-setup cert-setup --domain storage-bot.com -v
 ```
 
 **Options:**
@@ -363,14 +363,14 @@ Returns:
 }
 ```
 
-#### `setupFrontend(options)`
+#### `setupCert(options)`
 
 Request ACM certificate and set up DNS validation.
 
 ```javascript
-const { setupFrontend } = require('deploy-key-setup');
+const { setupCert } = require('deploy-key-setup');
 
-const results = await setupFrontend({
+const results = await setupCert({
   domain: 'storage-bot.com',    // Required: apex domain
   region: 'us-east-1',          // Optional: AWS region
   verbose: false                // Optional: verbose logging

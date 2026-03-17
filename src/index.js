@@ -219,7 +219,7 @@ async function setupActionsAccess(options) {
  * @param {boolean} [options.verbose] - Enable verbose logging
  * @returns {Promise<Object>} Results including certificate ARN
  */
-async function setupFrontend(options) {
+async function setupCert(options) {
   const { domain, region, verbose } = options;
 
   if (!domain) {
@@ -273,7 +273,7 @@ async function setupFrontend(options) {
 module.exports = {
   setupDeployKeys,
   setupActionsAccess,
-  setupFrontend,
+  setupCert,
   verifyRepoAccess,
   generateKeys,
   SSHService,

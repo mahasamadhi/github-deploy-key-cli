@@ -5,7 +5,7 @@ const chalk = require('chalk');
 const ora = require('ora');
 const fs = require('fs');
 const path = require('path');
-const { setupDeployKeys, setupActionsAccess, setupFrontend, verifyRepoAccess, logger } = require('../src');
+const { setupDeployKeys, setupActionsAccess, setupCert, verifyRepoAccess, logger } = require('../src');
 
 const program = new Command();
 
@@ -367,16 +367,16 @@ program
     }
   });
 
-// Frontend setup command
+// Cert setup command
 program
-  .command('frontend-setup')
-  .description('Request ACM certificate and set up DNS validation for frontend deployment')
+  .command('cert-setup')
+  .description('Request ACM certificate with Route 53 DNS validation')
   .requiredOption('-d, --domain <domain>', 'Apex domain (e.g. storage-bot.com)')
   .option('-r, --region <region>', 'AWS region', 'us-east-1')
   .option('-v, --verbose', 'Enable verbose output')
   .action(async (options) => {
     try {
-      const results = await setupFrontend({
+      const results = await setupCert({
         domain: options.domain,
         region: options.region,
         verbose: options.verbose
@@ -389,7 +389,7 @@ program
         console.log(chalk.yellow(results.certificateArn));
         console.log(chalk.green('============================================'));
       } else {
-        console.log(chalk.yellow('\n! Frontend setup completed with errors.'));
+        console.log(chalk.yellow('\n! Cert setup completed with errors.'));
         process.exit(1);
       }
     } catch (error) {
