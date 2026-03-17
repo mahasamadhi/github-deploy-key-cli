@@ -134,8 +134,84 @@ function generateKeys(repos, options = {}) {
   };
 }
 
+/**
+ * Set up GitHub Actions SSH access to this EC2 server
+ *
+ * @param {Object} options - Configuration options
+ * @param {string} options.token - GitHub personal access token
+ * @param {Array} options.repos - Array of { org, repo, name } to receive the secrets
+ * @param {string} [options.sshDir] - SSH directory (default: ~/.ssh)
+ * @param {string} [options.keyName] - Key filename (default: github-actions-deploy)
+ * @param {string} [options.ec2Host] - EC2 host/IP to store as EC2_HOST secret
+ * @param {string} [options.ec2User] - EC2 user to store as EC2_USER secret
+ * @param {boolean} [options.verbose] - Enable verbose logging
+ * @returns {Promise<Object>} Results of the setup process
+ */
+async function setupActionsAccess(options) {
+  const { token, repos, sshDir, keyName, ec2Host, ec2User, verbose } = options;
+
+  if (!token) {
+    throw new Error('GitHub token is required');
+  }
+
+  if (!repos || repos.length === 0) {
+    throw new Error('At least one repository is required');
+  }
+
+  logger.setVerbose(verbose || false);
+
+  const config = {
+    sshDir: sshDir || path.join(os.homedir(), '.ssh'),
+    keyType: 'ed25519'
+  };
+
+  const sshService = new SSHService(config);
+  const githubService = new GitHubService(sshService);
+
+  const results = {
+    key: null,
+    secrets: [],
+    success: true
+  };
+
+  // 1. Verify token
+  logger.info('Verifying GitHub token...');
+  const tokenResult = await githubService.verifyToken(token);
+  if (!tokenResult.valid) {
+    throw new Error(`Invalid GitHub token: ${tokenResult.error}`);
+  }
+  logger.success(`Authenticated as ${tokenResult.user}`);
+
+  // 2. Generate keypair and add to authorized_keys
+  results.key = sshService.generateActionsKey(keyName || 'github-actions-deploy');
+  if (!results.key.success) {
+    results.success = false;
+    return results;
+  }
+
+  // 3. Build secrets map
+  const secrets = {
+    EC2_SSH_KEY: results.key.privateKey
+  };
+  if (ec2Host) {
+    secrets.EC2_HOST = ec2Host;
+  }
+  if (ec2User) {
+    secrets.EC2_USER = ec2User;
+  }
+
+  // 4. Upload secrets to all repos
+  results.secrets = await githubService.addActionsSecrets(repos, token, secrets);
+  if (results.secrets.some(r => !r.success)) {
+    results.success = false;
+  }
+
+  return results;
+}
+
 module.exports = {
   setupDeployKeys,
+  setupActionsAccess,
   verifyRepoAccess,
   generateKeys,
   SSHService,

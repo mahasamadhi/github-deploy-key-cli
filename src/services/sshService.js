@@ -138,6 +138,52 @@ class SSHService {
     }
     return null;
   }
+
+  generateActionsKey(keyName = 'github-actions-deploy') {
+    logger.info('Setting up GitHub Actions deploy key...');
+    const keyPath = path.join(this.sshDir, keyName);
+    const authorizedKeysPath = path.join(this.sshDir, 'authorized_keys');
+
+    const result = { name: keyName, success: true, keyPath };
+
+    try {
+      // Generate keypair if it doesn't exist
+      if (!fs.existsSync(keyPath)) {
+        logger.debug(`Generating ed25519 key: ${keyPath}...`);
+        execSync(`ssh-keygen -t ed25519 -C "${keyName}" -f "${keyPath}" -N ""`, { stdio: 'pipe' });
+        logger.success(`Actions deploy key generated: ${keyPath}`);
+        result.created = true;
+      } else {
+        logger.debug(`Actions deploy key already exists: ${keyPath}`);
+        result.existed = true;
+      }
+
+      // Append public key to authorized_keys
+      const publicKey = fs.readFileSync(`${keyPath}.pub`, 'utf8').trim();
+      let authorizedKeys = '';
+      if (fs.existsSync(authorizedKeysPath)) {
+        authorizedKeys = fs.readFileSync(authorizedKeysPath, 'utf8');
+      }
+
+      if (authorizedKeys.includes(publicKey)) {
+        logger.debug('Public key already in authorized_keys');
+        result.authorizedKeyExisted = true;
+      } else {
+        const separator = authorizedKeys && !authorizedKeys.endsWith('\n') ? '\n' : '';
+        fs.writeFileSync(authorizedKeysPath, authorizedKeys + separator + publicKey + '\n', { mode: 0o600 });
+        logger.success('Public key appended to authorized_keys');
+        result.authorizedKeyAdded = true;
+      }
+
+      // Read private key for uploading as secret
+      result.privateKey = fs.readFileSync(keyPath, 'utf8');
+
+      return result;
+    } catch (error) {
+      logger.error(`Failed to set up Actions deploy key: ${error.message}`);
+      return { name: keyName, success: false, error: error.message };
+    }
+  }
 }
 
 module.exports = SSHService;

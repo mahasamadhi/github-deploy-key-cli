@@ -81,6 +81,86 @@ deploy-key-setup init -o ./my-config.json
 deploy-key-setup verify -c ./repos-config.json
 ```
 
+#### `actions-setup` - Set up GitHub Actions SSH access to EC2
+
+Generates an SSH keypair on your EC2 server, adds the public key to `authorized_keys`, and uploads the private key (plus optional host/user info) as encrypted GitHub Actions secrets on one or more repos.
+
+```bash
+# With config file + EC2 details
+deploy-key-setup actions-setup -c ./repos-config.json --host 52.6.132.60 --user ubuntu
+
+# With token from command line
+deploy-key-setup actions-setup -t ghp_xxxx --host 52.6.132.60 --user ubuntu
+
+# Custom key name
+deploy-key-setup actions-setup -c ./repos-config.json --key-name my-deploy-key --host 52.6.132.60 --user ubuntu
+
+# Interactive mode (prompts for repos, host, user)
+deploy-key-setup actions-setup
+
+# Verbose output
+deploy-key-setup actions-setup -c ./repos-config.json --host 52.6.132.60 --user ubuntu -v
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --config <path>` | Path to config file |
+| `-t, --token <token>` | GitHub personal access token |
+| `-s, --ssh-dir <path>` | SSH directory (default: `~/.ssh`) |
+| `-k, --key-name <name>` | SSH key filename (default: `github-actions-deploy`) |
+| `--host <host>` | EC2 host/IP to store as `EC2_HOST` secret |
+| `--user <user>` | EC2 user to store as `EC2_USER` secret |
+| `-v, --verbose` | Enable verbose output |
+
+**What it does:**
+1. Generates `~/.ssh/github-actions-deploy` keypair (ed25519) on the EC2 server
+2. Appends the public key to `~/.ssh/authorized_keys` so GitHub Actions can SSH in
+3. Encrypts the private key using the repo's Actions public key (libsodium sealed box)
+4. Uploads `EC2_SSH_KEY` as an encrypted secret to each repo via the GitHub API
+5. Optionally uploads `EC2_HOST` and `EC2_USER` as secrets
+
+**What gets created where:**
+| Location | What |
+|----------|------|
+| EC2: `~/.ssh/github-actions-deploy` | Private key (stays on server) |
+| EC2: `~/.ssh/github-actions-deploy.pub` | Public key |
+| EC2: `~/.ssh/authorized_keys` | Public key appended here |
+| GitHub: repo > Settings > Secrets | `EC2_SSH_KEY`, `EC2_HOST`, `EC2_USER` |
+
+**Example GitHub Actions workflow using the secrets:**
+```yaml
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to EC2
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+          chmod 600 key.pem
+          ssh -i key.pem -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "cd /app && git pull && npm install && pm2 restart all"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f key.pem
+```
+
+**GitHub token requirements for `actions-setup`:**
+
+Your PAT needs these scopes to manage Actions secrets:
+- Classic token: `repo` scope
+- Fine-grained token: `Secrets` (read/write) + `Actions` (read/write) permissions on the target repos
+
 ## Configuration File
 
 Create a `repos-config.json`:
@@ -172,6 +252,39 @@ Returns:
 }
 ```
 
+#### `setupActionsAccess(options)`
+
+Full setup: generates keypair, adds to authorized_keys, and uploads secrets to GitHub Actions.
+
+```javascript
+const { setupActionsAccess } = require('deploy-key-setup');
+
+const results = await setupActionsAccess({
+  token: 'ghp_xxx',                    // Required: GitHub PAT
+  repos: [                             // Required: repos to receive secrets
+    { org: 'myorg', repo: 'my-app' }
+  ],
+  ec2Host: '52.6.132.60',              // Optional: stored as EC2_HOST secret
+  ec2User: 'ubuntu',                   // Optional: stored as EC2_USER secret
+  keyName: 'github-actions-deploy',    // Optional: key filename
+  sshDir: '~/.ssh',                    // Optional: SSH directory
+  verbose: false                       // Optional: verbose logging
+});
+```
+
+Returns:
+```javascript
+{
+  success: true,
+  key: { name: 'github-actions-deploy', success: true, keyPath: '...', created: true },
+  secrets: [
+    { success: true, name: 'my-app', secretName: 'EC2_SSH_KEY' },
+    { success: true, name: 'my-app', secretName: 'EC2_HOST' },
+    { success: true, name: 'my-app', secretName: 'EC2_USER' }
+  ]
+}
+```
+
 #### `verifyRepoAccess(token, repos)`
 
 Check if token has access to repositories.
@@ -220,12 +333,20 @@ The alias routes through the correct SSH key automatically.
 
 ## Files Created
 
+### `setup` command
 | File | Description |
 |------|-------------|
 | `~/.ssh/<name>_ed25519` | Private key |
 | `~/.ssh/<name>_ed25519.pub` | Public key |
 | `~/.ssh/config` | SSH config (appended) |
 | `~/.ssh/known_hosts` | GitHub host keys (appended) |
+
+### `actions-setup` command
+| File | Description |
+|------|-------------|
+| `~/.ssh/github-actions-deploy` | Private key for Actions |
+| `~/.ssh/github-actions-deploy.pub` | Public key |
+| `~/.ssh/authorized_keys` | Public key appended here |
 
 ## Getting This Tool onto Your EC2
 
